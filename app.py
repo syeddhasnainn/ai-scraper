@@ -1,8 +1,9 @@
+import pandas as pd
 import json
 from dotenv import load_dotenv
 import streamlit as st
-import os 
 import requests
+import os 
 from config import OpenAIConfig
 from playwright.async_api import async_playwright
 import google.generativeai as genai
@@ -14,7 +15,8 @@ from playwright.sync_api import sync_playwright, Playwright
 from prompts import prompts
 from urllib.parse import urlparse
 import re
-
+import httpx
+import asyncio
 # logging.basicConfig(
 #     format="%(levelname)s [%(asctime)s] %(name)s - %(message)s",
 #     datefmt="%Y-%m-%d %H:%M:%S",
@@ -52,7 +54,12 @@ def gemini_response(response, prompt):
     return response.candidates[0].content.parts[0].text
 
 def html_scraper(url):
-    req = requests.Session()
+    """
+    Takes a url and scrapes the html content from a single url
+    @param url: The url to scrape
+    @return: The html content of the url
+    """
+    
     url = get_root_address(url)
     query = f'{url} "contact emails'
 
@@ -65,17 +72,42 @@ def html_scraper(url):
     headers = {
         "Referer":"referer: https://www.google.com/",
         }
+    while True:
+        proxy = {
+        'http://': os.getenv('PROXY'),
+        'https://': os.getenv('PROXY')
+    }
+        
+        ua = UserAgent()
+        header = ua.random
+        headers['User-Agent'] = header
+        with httpx.Client(proxies=proxy) as client:
+            response = client.get('https://www.google.com/search', params=params, headers=headers,)
+            print(f'{response.url} | {response.status_code}')
+            if response.status_code == 200:
+                break
     
-    ua = UserAgent()
-    header = ua.random
-    headers['User-Agent'] = header
-    request = req.get('https://www.google.com/search', params=params, headers=headers)
-    response = request.text
-    print(f'{request.url} | {request.status_code}')
-    if request.status_code != 200:
-        response = dynamic_response(request.url)
-    return response
+    return response.text
 
+async def async_html_scraper(url, proxies):
+    async with httpx.AsyncClient(proxies=proxies) as client:
+        response = await client.get(url)
+        print(response.status_code)
+        json_output = gemini_response(response.text, prompts[0]['find_founder'])
+        return json_output
+
+async def main(list_of_urls):
+    tasks = [] #list of all the coroutines
+    for url in list_of_urls:
+        proxy = {
+        'http://': os.getenv('PROXY'),
+        'https://': os.getenv('PROXY')
+    }
+        tasks.append(async_html_scraper(url,proxy))
+
+    responses = await asyncio.gather(*tasks)
+    return responses
+    
 def get_root_address(url):
     """Takes a url and returns the domain
     @param url: Any url like https://example.com/
@@ -87,7 +119,6 @@ def get_root_address(url):
     u = urlparse(url)
     return u.netloc
      
-
 def token_counter(response):
         encoding = tiktoken.encoding_for_model('gpt-3.5-turbo-0125')
         return len(encoding.encode(response))
@@ -105,12 +136,23 @@ def extract_json(input_string):
 
     return None
 
-if __name__ == "__main__":
-    url = 'https://shipfa.st/'
+def get_proxies():
+    proxy = {
+    'http': os.getenv('PROXY'),
+    'https': os.getenv('PROXY')
+    }
+    
+    url = 'https://httpbin.org/ip'
+    response = requests.get(url, proxies=proxy)
+    return response.json()
 
-    response = html_scraper(url)
-    result = gemini_response(response, prompts[0]['find_founder'])
-    result = extract_json(result)
-    print(result)
+
+if __name__ == "__main__":
+    df = pd.read_csv('sample.csv')['business_website'].to_list()
+    df = [x for x in df if str(x) != 'nan']
+    r = asyncio.run(main(df))
+    print(r)
+    
+ 
 
     
